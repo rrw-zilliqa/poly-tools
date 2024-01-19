@@ -99,6 +99,7 @@ var (
 	amt                                                                   int64
 	keyFile                                                               string
 	stateFile                                                             string
+	outFile                                                               string
 	id                                                                    uint64
 	blockMsgDelay, hashMsgDelay, peerHandshakeTimeout, maxBlockChangeView uint64
 	rootca                                                                string
@@ -119,6 +120,7 @@ func init() {
 	flag.Int64Var(&amt, "amt", 50, "amount to create new cosmos validator")
 	flag.StringVar(&keyFile, "cosmos_val_privk_file", "", "cosmos validator's privk file")
 	flag.StringVar(&stateFile, "cosmos_val_state_file", "", "cosmos validator's state file")
+	flag.StringVar(&outFile, "output_file", "", "Zilliqa sync state output file")
 	flag.Uint64Var(&id, "id", 0, "chain id to quit")
 	flag.Uint64Var(&blockMsgDelay, "blk_msg_delay", 5000, "")
 	flag.Uint64Var(&hashMsgDelay, "hash_msg_delay", 5000, "")
@@ -273,7 +275,7 @@ func main() {
 		}
 	case "get_zil_sync_data":
 		// We don't need poly accounts here.
-		GetZilSyncData(poly)
+		GetZilSyncData(poly, outFile)
 	case "sync_genesis_header":
 		wArr := strings.Split(pWalletFiles, ",")
 		pArr := strings.Split(pPwds, ",")
@@ -706,7 +708,7 @@ func SyncEthGenesisHeader(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Accou
 	log.Infof("successful to sync poly genesis header to Ethereum: ( txhash: %s )", tx.Hash().String())
 }
 
-func GetZilSyncData(poly *poly_go_sdk.PolySdk) {
+func GetZilSyncData(poly *poly_go_sdk.PolySdk, outFile string) {
 	type TxBlockAndDsComm struct {
 		TxBlock *core.TxBlock
 		DsBlock *core.DsBlock
@@ -719,7 +721,7 @@ func GetZilSyncData(poly *poly_go_sdk.PolySdk) {
 		initDsComm.CurrentTxEpoch,
 		initDsComm.CurrentDSEpoch,
 		initDsComm.NumOfDSGuard)
-	fmt.Printf("Next Tx Epoch is %s - waiting for a block to be generated ",
+	fmt.Printf("Next Tx Epoch is %s - waiting for a block to be generated\n ",
 		nextTxEpoch)
 
 	for {
@@ -769,8 +771,11 @@ func GetZilSyncData(poly *poly_go_sdk.PolySdk) {
 	if err != nil {
 		panic(fmt.Errorf("SyncZILGenesisHeader marshal genesis info failed: %s", err.Error()))
 	}
-	log.Infof("put this in your config: \n")
-	log.Infof("%s", raw)
+	err = os.WriteFile(outFile, []byte(raw), 0644)
+	if err != nil {
+		panic(fmt.Errorf("Cannot write output to %s", outFile))
+	}
+	log.Infof("State of block %s written to %s. Now run sync_zil_genesis_from_file", initDsComm.CurrentTxEpoch, outFile)
 }
 
 func SyncZILGenesisHeader(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Account) {
