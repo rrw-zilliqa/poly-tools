@@ -99,6 +99,7 @@ var (
 	amt                                                                   int64
 	keyFile                                                               string
 	stateFile                                                             string
+	inFile                                                                string
 	outFile                                                               string
 	id                                                                    uint64
 	blockMsgDelay, hashMsgDelay, peerHandshakeTimeout, maxBlockChangeView uint64
@@ -121,6 +122,7 @@ func init() {
 	flag.StringVar(&keyFile, "cosmos_val_privk_file", "", "cosmos validator's privk file")
 	flag.StringVar(&stateFile, "cosmos_val_state_file", "", "cosmos validator's state file")
 	flag.StringVar(&outFile, "output_file", "", "Zilliqa sync state output file")
+	flag.StringVar(&inFile, "input_file", "", "Zilliqa sync state input file")
 	flag.Uint64Var(&id, "id", 0, "chain id to quit")
 	flag.Uint64Var(&blockMsgDelay, "blk_msg_delay", 5000, "")
 	flag.Uint64Var(&hashMsgDelay, "hash_msg_delay", 5000, "")
@@ -276,6 +278,18 @@ func main() {
 	case "get_zil_sync_data":
 		// We don't need poly accounts here.
 		GetZilSyncData(poly, outFile)
+	case "sync_zil_genesis_header_from_file":
+		wArr := strings.Split(pWalletFiles, ",")
+		pArr := strings.Split(pPwds, ",")
+
+		accArr := make([]*poly_go_sdk.Account, len(wArr))
+		for i, v := range wArr {
+			accArr[i], err = btc.GetAccountByPassword(poly, v, []byte(pArr[i]))
+			if err != nil {
+				panic(fmt.Errorf("failed to decode no%d wallet %s with pwd %s", i, wArr[i], pArr[i]))
+			}
+		}
+		SyncZilGenesisHeaderFromFile(poly, accArr, inFile)
 	case "sync_genesis_header":
 		wArr := strings.Split(pWalletFiles, ",")
 		pArr := strings.Split(pPwds, ",")
@@ -775,7 +789,111 @@ func GetZilSyncData(poly *poly_go_sdk.PolySdk, outFile string) {
 	if err != nil {
 		panic(fmt.Errorf("Cannot write output to %s", outFile))
 	}
-	log.Infof("State of block %s written to %s. Now run sync_zil_genesis_from_file", initDsComm.CurrentTxEpoch, outFile)
+	log.Infof("State of block %s written to %s. Now run sync_zil_genesis_header_from_file", initDsComm.CurrentTxEpoch, outFile)
+}
+
+func SyncZilGenesisHeaderFromFile(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Account, inFile string) {
+	type TxBlockAndDsComm struct {
+		TxBlock *core.TxBlock
+		DsBlock *core.DsBlock
+		DsComm  []core.PairOfNode
+	}
+	log.Infof("Reading sync data from %s", inFile)
+	raw, err := os.ReadFile(inFile)
+	if err != nil {
+		panic(fmt.Errorf("Cannot read %s - %s", inFile, err.Error()))
+	}
+	log.Infof("Read %d characters. Processing .. ", len(raw))
+	var txBlockAndDsComm TxBlockAndDsComm
+
+	err = json.Unmarshal(raw, &txBlockAndDsComm)
+	if err != nil {
+		panic(fmt.Errorf("Cannot unmarshal %s - %s", string(raw), err.Error()))
+	}
+
+	dsBlock := txBlockAndDsComm.DsBlock
+	txBlock := txBlockAndDsComm.TxBlock
+	dsComm := txBlockAndDsComm.DsComm
+	zilSdk := provider.NewProvider(config.DefConfig.ZilURL)
+	// It's "safe" to do this because syncing a genesis header to another network
+	// isn't really supported :-p
+	networkId, err := zilSdk.GetNetworkId()
+	if err != nil {
+		panic(fmt.Errorf("SyncZILGenesisHeader failed: %s", err.Error()))
+	}
+
+	log.Infof("Syncing genesis info onto polynetwork .. ")
+	// sync zilliqa genesis info onto polynetwork
+	txhash, err := poly.Native.Hs.SyncGenesisHeader(config.DefConfig.ZilChainID, raw, accArr)
+	if err != nil {
+		if strings.Contains(err.Error(), "had been initialized") {
+			log.Info("zil already synced")
+		} else {
+			panic(fmt.Errorf("SyncZILGenesisHeader failed: %v", err))
+		}
+	} else {
+		testcase.WaitPolyTx(txhash, poly)
+		log.Infof("successful to sync zil genesis header, ds block: %s, tx block: %s, ds comm: %+v\n", zilutil.EncodeHex(dsBlock.BlockHash[:]), zilutil.EncodeHex(txBlock.BlockHash[:]), dsComm)
+	}
+
+	// sycn poly network info to zilliqa cross chain manager
+	log.Infof("Syncing genesis info onto Zilliqa CCM .. ")
+	gB, err := poly.GetBlockByHeight(config.DefConfig.RCEpoch)
+	if err != nil {
+		panic(err)
+	}
+	info := &vconfig.VbftBlockInfo{}
+	if err := json.Unmarshal(gB.Header.ConsensusPayload, info); err != nil {
+		panic(fmt.Errorf("commitGenesisHeader - unmarshal blockInfo error: %s", err))
+	}
+
+	var bookkeepers []keypair.PublicKey
+	for _, peer := range info.NewChainConfig.Peers {
+		keystr, _ := hex.DecodeString(peer.ID)
+		key, _ := keypair.DeserializePublicKey(keystr)
+		bookkeepers = append(bookkeepers, key)
+	}
+	bookkeepers = keypair.SortPublicKeys(bookkeepers)
+
+	publickeys := make([]byte, 0)
+	for _, key := range bookkeepers {
+		publickeys = append(publickeys, ont.GetOntNoCompressKey(key)...)
+	}
+
+	genesisHeader := "0x" + zilutil.EncodeHex(gB.Header.ToArray())
+	genesisPubKey := zilutil.EncodeHex(publickeys)
+
+	publicKeys, err := polynetwork.SplitPubKeys(genesisPubKey)
+	if err != nil {
+		panic(err)
+	}
+
+	wallet := account.NewWallet()
+	wallet.AddByPrivateKey(config.DefConfig.ZilPrivateKey)
+	chainIdInt, _ := strconv.ParseInt(networkId, 10, 64)
+	log.Infof("Construct polynetwork proxy.. ")
+	p := &polynetwork.Proxy{
+		ProxyAddr:  config.DefConfig.ZilEccdProxy,
+		ImplAddr:   config.DefConfig.ZilEccdImpl,
+		Wallet:     wallet,
+		Client:     zilSdk,
+		ChainId:    int(chainIdInt),
+		MsgVersion: 1,
+	}
+
+	log.Infof("Call InitGenesisBlock.. ")
+	tx, err := p.InitGenesisBlock(genesisHeader, publicKeys)
+	if err != nil {
+		panic(fmt.Errorf("SyncZILGenesisHeader failed at init genesis block to zilliqa: %v", err))
+	}
+
+	hash, _ := tx.Hash()
+	if tx.Receipt.Success {
+		log.Infof("succeed to sync poly genesis header to ZIL: ( txhash: %s )", zilutil.EncodeHex(hash))
+	} else {
+		log.Infof("failed to sync poly genesis header to ZIL: ( txhash: %s )", zilutil.EncodeHex(hash))
+	}
+
 }
 
 func SyncZILGenesisHeader(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Account) {
