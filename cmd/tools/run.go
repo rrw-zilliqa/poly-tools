@@ -145,6 +145,7 @@ func main() {
 		panic(err)
 	}
 
+	log.Infof("RCWallet %s pwd %s", config.DefConfig.RCWallet, config.DefConfig.RCWalletPwd)
 	acc, err := btc.GetAccountByPassword(poly, config.DefConfig.RCWallet, []byte(config.DefConfig.RCWalletPwd))
 	if err != nil {
 		panic(err)
@@ -270,6 +271,9 @@ func main() {
 				ApproveRegisterSideChain(config.DefConfig.PolygonBorChainID, poly, accArr)
 			}
 		}
+	case "get_zil_sync_data":
+		// We don't need poly accounts here.
+		GetZilSyncData(poly)
 	case "sync_genesis_header":
 		wArr := strings.Split(pWalletFiles, ",")
 		pArr := strings.Split(pPwds, ",")
@@ -700,6 +704,73 @@ func SyncEthGenesisHeader(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Accou
 	}
 	tool.WaitTransactionConfirm(tx.Hash())
 	log.Infof("successful to sync poly genesis header to Ethereum: ( txhash: %s )", tx.Hash().String())
+}
+
+func GetZilSyncData(poly *poly_go_sdk.PolySdk) {
+	type TxBlockAndDsComm struct {
+		TxBlock *core.TxBlock
+		DsBlock *core.DsBlock
+		DsComm  []core.PairOfNode
+	}
+	zilSdk := provider.NewProvider(config.DefConfig.ZilURL)
+	initDsComm, _ := zilSdk.GetCurrentDSComm()
+	nextTxEpoch, _ := strconv.ParseUint(initDsComm.CurrentTxEpoch, 10, 64)
+	fmt.Printf("Current tx block number is %s, ds block number is %s, number of ds guards is: %d\n",
+		initDsComm.CurrentTxEpoch,
+		initDsComm.CurrentDSEpoch,
+		initDsComm.NumOfDSGuard)
+	fmt.Printf("Next Tx Epoch is %s - waiting for a block to be generated ",
+		nextTxEpoch)
+
+	for {
+		latestTxBlock, _ := zilSdk.GetLatestTxBlock()
+		fmt.Println("wait current tx block got generated")
+		latestTxBlockNum, _ := strconv.ParseUint(latestTxBlock.Header.BlockNum, 10, 64)
+		fmt.Printf("latest tx block num is: %d, current tx block num is: %d", latestTxBlockNum, nextTxEpoch)
+		if latestTxBlockNum >= nextTxEpoch {
+			break
+		}
+		time.Sleep(time.Second * 20)
+	}
+
+	networkId, err := zilSdk.GetNetworkId()
+	if err != nil {
+		panic(fmt.Errorf("SyncZILGenesisHeader failed: %s", err.Error()))
+	}
+	log.Infof("Network id %s", networkId)
+
+	var dsComm []core.PairOfNode
+	for _, ds := range initDsComm.DSComm {
+		dsComm = append(dsComm, core.PairOfNode{
+			PubKey: ds,
+		})
+	}
+
+	dsBlockT, err := zilSdk.GetDsBlockVerbose(initDsComm.CurrentDSEpoch)
+	if err != nil {
+		panic(fmt.Errorf("SyncZILGenesisHeader get ds block %s failed: %s", initDsComm.CurrentDSEpoch, err.Error()))
+	}
+	dsBlock := core.NewDsBlockFromDsBlockT(dsBlockT)
+
+	txBlockT, err := zilSdk.GetTxBlockVerbose(initDsComm.CurrentTxEpoch)
+	if err != nil {
+		panic(fmt.Errorf("SyncZILGenesisHeader get tx block %s failed: %s", initDsComm.CurrentTxEpoch, err.Error()))
+	}
+
+	txBlock := core.NewTxBlockFromTxBlockT(txBlockT)
+
+	txBlockAndDsComm := TxBlockAndDsComm{
+		TxBlock: txBlock,
+		DsBlock: dsBlock,
+		DsComm:  dsComm,
+	}
+
+	raw, err := json.Marshal(txBlockAndDsComm)
+	if err != nil {
+		panic(fmt.Errorf("SyncZILGenesisHeader marshal genesis info failed: %s", err.Error()))
+	}
+	log.Infof("put this in your config: \n")
+	log.Infof("%s", raw)
 }
 
 func SyncZILGenesisHeader(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Account) {
