@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -40,6 +41,7 @@ import (
 	"github.com/Zilliqa/gozilliqa-sdk/crosschain/polynetwork"
 	"github.com/Zilliqa/gozilliqa-sdk/provider"
 	zilutil "github.com/Zilliqa/gozilliqa-sdk/util"
+	"github.com/Zilliqa/gozilliqa-sdk/verifier"
 
 	"github.com/btcsuite/btcd/wire"
 	types3 "github.com/cosmos/cosmos-sdk/types"
@@ -101,6 +103,9 @@ var (
 	stateFile                                                             string
 	inFile                                                                string
 	outFile                                                               string
+	blkNum                                                                int64
+	srcBlkNum                                                             int64
+	guardNodes                                                            int
 	id                                                                    uint64
 	blockMsgDelay, hashMsgDelay, peerHandshakeTimeout, maxBlockChangeView uint64
 	rootca                                                                string
@@ -131,6 +136,9 @@ func init() {
 	flag.StringVar(&rootca, "rootca", "", "file path for root CA")
 	flag.Uint64Var(&chainId, "chainid", 0, "default 0 means all chains")
 	flag.Uint64Var(&fabricRelayerTy, "fab_relayer_type", 1, "the relayer of fabric type: how many orgs need to sign CA for relayer")
+	flag.Int64Var(&blkNum, "block_number", -1, "For Zilliqa genesis sync, the block number to scan forward to")
+	flag.Int64Var(&srcBlkNum, "data_for_block", -1, "For Zilliqa genesis sync, the block number of the ds committee in infile")
+	flag.IntVar(&guardNodes, "guard_nodes", 0, "For Zilliqa genesis sync, the number of guard nodes")
 
 	flag.StringVar(&neo3StateValidators, "neo3_state_validators", "", "neo3 state root validator public keys in compressed format")
 
@@ -275,9 +283,14 @@ func main() {
 				ApproveRegisterSideChain(config.DefConfig.PolygonBorChainID, poly, accArr)
 			}
 		}
+	case "get_zil_guards":
+		// Just print the number of guard nodes.
+		GetZilGuards(poly)
 	case "get_zil_sync_data":
 		// We don't need poly accounts here.
 		GetZilSyncData(poly, outFile)
+	case "zil_reconstruct_genesis_header":
+		ZilReconstructGenesisHeader(poly, inFile, outFile, srcBlkNum, blkNum, guardNodes)
 	case "sync_zil_genesis_header_from_file":
 		wArr := strings.Split(pWalletFiles, ",")
 		pArr := strings.Split(pPwds, ",")
@@ -722,6 +735,12 @@ func SyncEthGenesisHeader(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Accou
 	log.Infof("successful to sync poly genesis header to Ethereum: ( txhash: %s )", tx.Hash().String())
 }
 
+func GetZilGuards(poly *poly_go_sdk.PolySdk) {
+	zilSdk := provider.NewProvider(config.DefConfig.ZilURL)
+	currentDsComm, _ := zilSdk.GetCurrentDSComm()
+	log.Infof("This network currently has %d guard nodes", currentDsComm.NumOfDSGuard)
+}
+
 func GetZilSyncData(poly *poly_go_sdk.PolySdk, outFile string) {
 	type TxBlockAndDsComm struct {
 		TxBlock *core.TxBlock
@@ -790,6 +809,290 @@ func GetZilSyncData(poly *poly_go_sdk.PolySdk, outFile string) {
 		panic(fmt.Errorf("Cannot write output to %s", outFile))
 	}
 	log.Infof("State of block %s written to %s. Now run sync_zil_genesis_header_from_file", initDsComm.CurrentTxEpoch, outFile)
+}
+
+// func GetZilSyncData(poly *poly_go_sdk.PolySdk, outFile string, blkNum int64, guards int) {
+// 	// The DS committee changes on 100-block boundaries.
+// 	const ZILLIQA_EPOCH_BLOCKS = 100
+// 	type TxBlockAndDsComm struct {
+// 		TxBlock *core.TxBlock
+// 		DsBlock *core.DsBlock
+// 		DsComm  []core.PairOfNode
+// 	}
+// 	zilSdk := provider.NewProvider(config.DefConfig.ZilURL)
+// 	initDsComm, _ := zilSdk.GetCurrentDSComm()
+// 	nextTxEpoch, _ := strconv.ParseUint(initDsComm.CurrentTxEpoch, 10, 64)
+//  	fmt.Printf("Current tx block number is %s, ds block number is %s, number of ds guards is: %d\n",
+// 		initDsComm.CurrentTxEpoch,
+// 		initDsComm.CurrentDSEpoch,
+// 		initDsComm.NumOfDSGuard)
+// 	fmt.Printf("Next Tx Epoch is %s - waiting for a block to be generated\n ",
+// 		nextTxEpoch)
+
+// 	for {
+// 		latestTxBlock, _ := zilSdk.GetLatestTxBlock()
+// 		fmt.Println("wait current tx block got generated")
+// 		latestTxBlockNum, _ := strconv.ParseUint(latestTxBlock.Header.BlockNum, 10, 64)
+// 		fmt.Printf("latest tx block num is: %d, current tx block num is: %d", latestTxBlockNum, nextTxEpoch)
+// 		if latestTxBlockNum >= nextTxEpoch {
+// 			break
+// 		}
+// 		time.Sleep(time.Second * 2)
+// 	}
+
+// 	networkId, err := zilSdk.GetNetworkId()
+// 	if err != nil {
+// 		panic(fmt.Errorf("SyncZILGenesisHeader failed: %s", err.Error()))
+// 	}
+// 	log.Infof("Network id %s", networkId)
+
+// 	var dsComm *list.List
+// 	dsComm = list.New()
+// 	for _, ds := range initDsComm.DSComm {
+// 		dsComm.PushBack(core.PairOfNode{
+// 			PubKey: ds,
+// 		})
+// 	}
+
+// 	if blkNum != -1 {
+// 		log.Infof("We have block %d, but we need block %d - scanning backwards .. ", nextTxEpoch, blkNum)
+// 		var currentDsEpoch uint64
+// 		currentDsEpoch, _ = strconv.ParseUint(initDsComm.CurrentDSEpoch, 10, 64)
+// 		var i uint64
+// 		i = nextTxEpoch
+// 		for {
+// 			log.Infof("Scanning %d", i)
+// 			// Last block of the previous epoch.
+// 			if i < ZILLIQA_EPOCH_BLOCKS {
+// 				panic(fmt.Errorf("Reached the beginning of the blockchain!"))
+// 			}
+// 			prevDsEpochBlk := ((i / ZILLIQA_EPOCH_BLOCKS) * ZILLIQA_EPOCH_BLOCKS) - 1
+// 			// nothing is going to happen until we hit the previous epoch.
+// 			log.Infof("prev ds epoch %d", prevDsEpochBlk)
+// 			// no more epochs until our target block.
+// 			if prevDsEpochBlk < uint64(blkNum) {
+// 				// We're there.
+// 				break
+// 			}
+// 			// Otherwise, we need to modify the DS Committee.
+// 			vblk, verr := zilSdk.GetTxBlock(strconv.Itoa(int(i)))
+// 			if verr != nil {
+// 				panic(fmt.Errorf("Couldn't get block header for block %d", i))
+// 			}
+// 			// Now get the DS Block
+// 			log.Infof("Block %d has DS block number %s", i, vblk.Header.DSBlockNum)
+// 			dsblk, verr := zilSdk.GetDsBlock(vblk.Header.DSBlockNum)
+// 			if verr != nil {
+// 				panic(fmt.Errorf("Couldn't get DS block %s", vblk.Header.DSBlockNum))
+// 			}
+// 			x, _ := json.Marshal(dsblk)
+// 			log.Infof("dsblk %s", x)
+// 			dsEpochAsInt, _ := strconv.ParseUint(dsblk.Header.BlockNum, 10, 64)
+// 			log.Infof("Encountered DS block %d", dsEpochAsInt)
+// 			if dsEpochAsInt != currentDsEpoch {
+// 				if dsEpochAsInt != currentDsEpoch-1 {
+// 					panic(fmt.Errorf("DS Block number jumped from %d to %d - failed to track",
+// 						currentDsEpoch, dsEpochAsInt))
+// 				}
+// 				decodedDsBlk := core.NewDsBlockFromDsBlockT(dsblk)
+// 				// Annoyingly, we have to do this backwards, so verifier.updateDSCommitteeComposition() does us no good.
+// 				dsComm, verr = ZilVerifyDsBlockBackwards(dsComm, decodedDsBlk, guards)
+// 				if verr != nil {
+// 					panic(fmt.Errorf("Couldn't verify ds block - %s", verr.Error()))
+// 				}
+// 			} else {
+// 				log.Infof("DS Epoch didn't change - still %d", dsEpochAsInt)
+// 			}
+// 			i = prevDsEpochBlk
+// 			currentDsEpoch = dsEpochAsInt
+// 		}
+// 	}
+
+// 	dsBlockT, err := zilSdk.GetDsBlockVerbose(initDsComm.CurrentDSEpoch)
+// 	if err != nil {
+// 		panic(fmt.Errorf("SyncZILGenesisHeader get ds block %s failed: %s", initDsComm.CurrentDSEpoch, err.Error()))
+// 	}
+// 	dsBlock := core.NewDsBlockFromDsBlockT(dsBlockT)
+
+// 	txBlockT, err := zilSdk.GetTxBlockVerbose(initDsComm.CurrentTxEpoch)
+// 	if err != nil {
+// 		panic(fmt.Errorf("SyncZILGenesisHeader get tx block %s failed: %s", initDsComm.CurrentTxEpoch, err.Error()))
+// 	}
+
+// 	txBlock := core.NewTxBlockFromTxBlockT(txBlockT)
+
+// 	var dsCommArray []core.PairOfNode
+// 	for v := range dsComm {
+// 		dsCommArray = append(dsCommArray, v)
+// 	}
+// 	txBlockAndDsComm := TxBlockAndDsComm{
+// 		TxBlock: txBlock,
+// 		DsBlock: dsBlock,
+// 		DsComm:  dsCommArray,
+// 	}
+
+// 	raw, err := json.Marshal(txBlockAndDsComm)
+// 	if err != nil {
+// 		panic(fmt.Errorf("SyncZILGenesisHeader marshal genesis info failed: %s", err.Error()))
+// 	}
+// 	err = os.WriteFile(outFile, []byte(raw), 0644)
+// 	if err != nil {
+// 		panic(fmt.Errorf("Cannot write output to %s", outFile))
+// 	}
+// 	log.Infof("State of block %s written to %s. Now run sync_zil_genesis_header_from_file", initDsComm.CurrentTxEpoch, outFile)
+// }
+
+func ZilReconstructGenesisHeader(poly *poly_go_sdk.PolySdk, inFile string, ouFile string, srcTxBlockNum int64, targetTxBlockNum int64, numGuards int) {
+	// Load the consensus from a JSON file, and then roll it forwards using the SDK until  you get to the
+	// target block.
+	const ZILLIQA_EPOCH_BLOCKS = 100
+	type TxBlockAndDsComm struct {
+		TxBlock *core.TxBlock
+		DsBlock *core.DsBlock
+		DsComm  []core.PairOfNode
+	}
+	type DsCommInput struct {
+		DsComm []core.PairOfNode
+	}
+	log.Infof("Reading sync data from %s", inFile)
+	raw, err := os.ReadFile(inFile)
+	if err != nil {
+		panic(fmt.Errorf("Cannot read %s - %s", inFile, err.Error()))
+	}
+	log.Infof("Read %d characters. Processing .. ", len(raw))
+	var dsCommInput DsCommInput
+
+	err = json.Unmarshal(raw, &dsCommInput)
+	if err != nil {
+		panic(fmt.Errorf("Cannot unmarshal %s - %s", string(raw), err.Error()))
+	}
+
+	// OK. We now have the block number and ds committee.
+	var dsComm *list.List
+	dsComm = list.New()
+	for _, ds := range dsCommInput.DsComm {
+		dsComm.PushBack(ds)
+	}
+	zilSdk := provider.NewProvider(config.DefConfig.ZilURL)
+	// We need the current DS Committee because we need to know the number of DSGuards
+	// we assume that the number of DS guards stays the same throughout the roll.
+
+	// Grab the original tx block so we can get the ds block number
+	log.Infof("Retrieving block data for block %d", srcTxBlockNum)
+	origTxBlockT, err := zilSdk.GetTxBlockVerbose(strconv.Itoa(int(srcTxBlockNum)))
+	if err != nil {
+		panic(fmt.Errorf("Cannot retrieve block %d", srcTxBlockNum))
+	}
+
+	var curDsBlockNum uint64
+	var curTxBlockNum uint64
+
+	log.Infof("Parsing .. ")
+	origTxBlock := core.NewTxBlockFromTxBlockT(origTxBlockT)
+	curDsBlockNum = origTxBlock.BlockHeader.DSBlockNum
+	log.Infof("Tx Block %d has DS block %d", srcTxBlockNum, curDsBlockNum)
+	curTxBlockNum = uint64(srcTxBlockNum)
+	if curTxBlockNum >= uint64(targetTxBlockNum) {
+		panic(fmt.Errorf("Input data file is for TxBlock %d, which is after target %d - cannot roll backwards", curTxBlockNum, targetTxBlockNum))
+	}
+
+	log.Infof("Starting at txBlock %d, dsBlock %d and moving to TxBlock %d",
+		curTxBlockNum, curDsBlockNum, targetTxBlockNum)
+	verifier := &verifier.Verifier{
+		NumOfDsGuard: numGuards,
+	}
+
+	var nextDsBlockNum uint64
+
+	// Technically speaking, we could do all this just with ds block numbers - there's no
+	// reason to get the tx blocks at all, but we do, just as a check.
+	for {
+		// Find the next Ds block
+		nextTxBlockNum := ((curTxBlockNum / ZILLIQA_EPOCH_BLOCKS) + 1) * ZILLIQA_EPOCH_BLOCKS
+		if nextTxBlockNum > uint64(targetTxBlockNum) {
+			break
+		}
+		// Now grab it.
+		nextTxBlock, err2 := zilSdk.GetTxBlockVerbose(strconv.Itoa(int(nextTxBlockNum)))
+		if err2 != nil {
+			panic(fmt.Errorf("Cannot retrieve Tx block %d : %v", nextTxBlockNum, err2))
+		}
+		nextDsBlockNum, _ = strconv.ParseUint(nextTxBlock.Header.DSBlockNum, 10, 64)
+		nextDsBlock, err3 := zilSdk.GetDsBlockVerbose(strconv.Itoa(int(nextDsBlockNum)))
+		if err3 != nil {
+			panic(fmt.Errorf("Cannot retrieve Ds block %d : %v", nextDsBlockNum, err3))
+		}
+		nextDsBlockNum, _ := strconv.ParseUint(nextDsBlock.Header.BlockNum, 10, 64)
+		log.Infof("DS Block at TxBlock %d is %d", nextTxBlockNum, nextDsBlockNum)
+		if nextDsBlockNum != curDsBlockNum {
+			log.Infof("... advance")
+			nextDsBlockDecoded := core.NewDsBlockFromDsBlockT(nextDsBlock)
+			log.Infof("There are %d to be removed, and %d to be added",
+				len(nextDsBlockDecoded.BlockHeader.RemoveDSNodePubKeys), len(nextDsBlockDecoded.BlockHeader.PoWDSWinners))
+			newDsList, err2 := verifier.VerifyDsBlock(nextDsBlockDecoded, dsComm)
+			if err2 != nil {
+				panic(fmt.Errorf("Cannot advance DS block past %d - %v", nextDsBlock, err2))
+			}
+			curDsBlockNum = nextDsBlockNum
+			dsComm = newDsList
+			log.Infof("After DS block, new committee is")
+			var elem *list.Element
+			elem = dsComm.Front()
+			for {
+				if elem == nil {
+					break
+				}
+				log.Infof(" > %s", elem.Value.(core.PairOfNode).PubKey)
+				elem = elem.Next()
+			}
+		}
+		curTxBlockNum = nextTxBlockNum
+	}
+
+	// OK. Now fetch the other data we need..
+	// Todo we actually already did this ^^^ -use that value instead..
+	log.Infof("Filling data for block %d", targetTxBlockNum)
+	targetTxBlockV, err4 := zilSdk.GetTxBlockVerbose(strconv.Itoa(int(targetTxBlockNum)))
+	if err4 != nil {
+		panic(fmt.Errorf("Cannot obtain block info for tx block %d", targetTxBlockNum))
+	}
+
+	txBlock := core.NewTxBlockFromTxBlockT(targetTxBlockV)
+	targetDsBlockNum := txBlock.BlockHeader.DSBlockNum
+	if nextDsBlockNum != targetDsBlockNum {
+		panic(fmt.Errorf("Internal inconsistency! Target Tx Block %d has DS Block %d, but we computed results for DS block %d. Call rrw",
+			targetTxBlockNum, targetDsBlockNum, nextDsBlockNum))
+	}
+	targetDsBlockV, err5 := zilSdk.GetDsBlockVerbose(strconv.Itoa(int(targetDsBlockNum)))
+	if err5 != nil {
+		panic(fmt.Errorf("Cannot obtain ds block info for ds block %d", targetDsBlockNum))
+	}
+	dsBlock := core.NewDsBlockFromDsBlockT(targetDsBlockV)
+	var dsCommArr []core.PairOfNode
+	var elem *list.Element
+	elem = dsComm.Front()
+	for {
+		if elem == nil {
+			break
+		}
+		dsCommArr = append(dsCommArr, elem.Value.(core.PairOfNode))
+		elem = elem.Next()
+	}
+	txBlockAndDsComm := TxBlockAndDsComm{
+		TxBlock: txBlock,
+		DsBlock: dsBlock,
+		DsComm:  dsCommArr,
+	}
+	raw, err7 := json.Marshal(txBlockAndDsComm)
+	if err7 != nil {
+		panic(fmt.Errorf("Cannot marshal genesis info - %s", err.Error()))
+	}
+	err = os.WriteFile(outFile, []byte(raw), 0644)
+	if err != nil {
+		panic(fmt.Errorf("Cannot write output to %s", outFile))
+	}
+	log.Infof("Genesis block state for tx block %d (DS %d) now hopefully reconstructed to %s. Try sync_zil_genesis_header_from_file",
+		targetTxBlockNum, targetDsBlockNum, outFile)
 }
 
 func SyncZilGenesisHeaderFromFile(poly *poly_go_sdk.PolySdk, accArr []*poly_go_sdk.Account, inFile string) {
