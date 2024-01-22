@@ -959,7 +959,7 @@ func ZilReconstructGenesisHeader(poly *poly_go_sdk.PolySdk, inFile string, ouFil
 	type DsCommInput struct {
 		DsComm []core.PairOfNode
 	}
-	log.Infof("Reading sync data from %s", inFile)
+	log.Infof("Reading sync data from %s with %d guard nodes", inFile, numGuards)
 	raw, err := os.ReadFile(inFile)
 	if err != nil {
 		panic(fmt.Errorf("Cannot read %s - %s", inFile, err.Error()))
@@ -3321,7 +3321,7 @@ func (v *Verifier) AggregatedPubKeyFromTxComm(dsComm *list.List, txBlock *core.T
 // abstract this two methods
 func (v *Verifier) generateDsCommArray(dsComm *list.List, dsBlock *core.DsBlock) ([][]byte, error) {
 	if dsComm.Len() != len(dsBlock.Cosigs.B2) {
-		return nil, errors.New("ds list mismatch")
+		return nil, errors.New(fmt.Sprintf("ds list mismatch - expected %d from cosigs, got %d from current estimate", len(dsBlock.Cosigs.B2), dsComm.Len()))
 	}
 	bitmap := dsBlock.Cosigs.B2
 	quorum := len(bitmap) / 3 * 2
@@ -3401,7 +3401,7 @@ func (v *Verifier) VerifyTxBlock(txBlock *core.TxBlock, dsComm *list.List) error
 	}
 	r, s := txBlock.GetRandS()
 	if !multisig.MultiVerify(aggregatedPubKey, txBlock.Serialize(), r, s) {
-		msg := fmt.Sprintf("verify tx block %d error", txBlock.BlockHeader.BlockNum)
+		msg := fmt.Sprintf("verify tx block %d error - cannot verify that this dsCommittee is correct", txBlock.BlockHeader.BlockNum)
 		return errors.New(msg)
 	}
 	return nil
@@ -3424,7 +3424,7 @@ func (v *Verifier) updateDSCommitteeComposition(selfKeyPub string, dsComm *list.
 	r, s := dsBlock.GetRandS()
 
 	if !multisig.MultiVerify(aggregatedPubKey, headerBytes, r, s) {
-		msg := fmt.Sprintf("verify ds block %d error", dsBlock.BlockHeader.BlockNum)
+		msg := fmt.Sprintf("verify ds block %d error - multisig does not check out for this DS committee", dsBlock.BlockHeader.BlockNum)
 		return nil, errors.New(msg)
 	}
 

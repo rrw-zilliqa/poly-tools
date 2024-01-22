@@ -67,8 +67,6 @@ def extract(persistence,outfile, blocks):
     # index 0 stores the index number of the leader; the rest are just the dscommittee members in order.
     for key, value in db:
         dsMap.append((int(key), DSCMember(value)))
-        print(value)
-        print(len(value))
     # Sort the tuples
     dsMapSorted = sorted(dsMap, key = lambda x: x[0])
     # Remove 0 - it's the identity of the leader.
