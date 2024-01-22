@@ -3464,7 +3464,12 @@ func (v *Verifier) updateDSCommitteeComposition(selfKeyPub string, dsComm *list.
 			count--
 			cursor = cursor.Next()
 		}
-		dsComm.InsertBefore(w, cursor)
+		if cursor == nil {
+			// The end of the list!
+			dsComm.PushBack(w)
+		} else {
+			dsComm.InsertBefore(w, cursor)
+		}
 	}
 
 	// 5. remove one node for every winner, maintaining the size of the DS Committee
