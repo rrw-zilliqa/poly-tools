@@ -41,6 +41,6 @@ Reconstruct a genesis header. This:
  * Outputs a gen header as of `blkOut` to `gen.json`
 
 ```sh
-./tools -tool zil_reconstruct_genesis_header -input_file dsc.json -output_file gen.json -data_for_block blkIn -block_number blkOut -guard_nodes g
+./tools -tool zil_reconstruct_genesis_header -conf config.json -input_file dsc.json -output_file gen.json -data_for_block blkIn -block_number blkOut -guard_nodes g
 ```
 

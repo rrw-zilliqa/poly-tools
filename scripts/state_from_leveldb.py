@@ -37,7 +37,8 @@ class MyEncoder(json.JSONEncoder):
 @click.argument('persistence')
 @click.argument('outfile')
 @click.option('--blocks/--no-blocks', default = True)
-def extract(persistence,outfile, blocks):
+@click.option('--print-committee/--no-print-committee', default=False)
+def extract(persistence,outfile, blocks, print_committee):
     """ Reconstruct a genesis header tracker input file
     Usage:
       extract [persistence] [outfile]
@@ -69,6 +70,10 @@ def extract(persistence,outfile, blocks):
         dsMap.append((int(key), DSCMember(value)))
     # Sort the tuples
     dsMapSorted = sorted(dsMap, key = lambda x: x[0])
+    if print_committee:
+        for val in dsMapSorted:
+            (k,v) = val
+            print(f"k = {k} v = {v.PubKey.hex()}")
     # Remove 0 - it's the identity of the leader.
     dsMapFiltered = list(map(lambda x: x[1], filter(lambda x : x[0] != 0, dsMapSorted)))
     print(f"Writing {len(dsMapFiltered)} DSC members to {outfile}")
