@@ -1009,6 +1009,8 @@ func ZilReconstructGenesisHeader(poly *poly_go_sdk.PolySdk, inFile string, ouFil
 
 	var nextDsBlockNum uint64
 
+	dsCommitteeVersion := 0
+
 	// Technically speaking, we could do all this just with ds block numbers - there's no
 	// reason to get the tx blocks at all, but we do, just as a check.
 	for {
@@ -1028,28 +1030,62 @@ func ZilReconstructGenesisHeader(poly *poly_go_sdk.PolySdk, inFile string, ouFil
 			panic(fmt.Errorf("Cannot retrieve Ds block %d : %v", nextDsBlockNum, err3))
 		}
 		nextDsBlockNum, _ := strconv.ParseUint(nextDsBlock.Header.BlockNum, 10, 64)
-		log.Infof("DS Block at TxBlock %d is %d", nextTxBlockNum, nextDsBlockNum)
+		log.Infof("DS Block at TxBlock %d is %d with DSC version %d", nextTxBlockNum, nextDsBlockNum, dsCommitteeVersion)
 		if nextDsBlockNum != curDsBlockNum {
 			log.Infof("... advance")
 			nextDsBlockDecoded := core.NewDsBlockFromDsBlockT(nextDsBlock)
 			log.Infof("There are %d to be removed, and %d to be added",
 				len(nextDsBlockDecoded.BlockHeader.RemoveDSNodePubKeys), len(nextDsBlockDecoded.BlockHeader.PoWDSWinners))
+
+			oldDsComm := list.New()
+			var curLink *list.Element
+			curLink = dsComm.Front()
+			for {
+				if curLink == nil {
+					break
+				}
+				oldDsComm.PushBack(curLink.Value)
+				curLink = curLink.Next()
+			}
+
 			newDsList, err2 := verifier.VerifyDsBlock(nextDsBlock, nextDsBlockDecoded, dsComm)
 			if err2 != nil {
 				panic(fmt.Errorf("Cannot advance DS block past %d - %v", nextDsBlock, err2))
 			}
 			curDsBlockNum = nextDsBlockNum
-			dsComm = newDsList
-			log.Infof("After DS block, new committee is")
-			var elem *list.Element
-			elem = dsComm.Front()
-			for {
-				if elem == nil {
-					break
+			// Check the correspondence between old and new dscs.
+			if oldDsComm.Len() != newDsList.Len() {
+				dsCommitteeVersion += 1
+			} else {
+				var elem1 *list.Element
+				var elem2 *list.Element
+				elem1 = oldDsComm.Front()
+				elem2 = newDsList.Front()
+				for {
+					if elem1 == nil {
+						break
+					}
+					if elem1.Value.(core.PairOfNode).PubKey != elem2.Value.(core.PairOfNode).PubKey {
+						log.Infof("Cttee change")
+						dsCommitteeVersion += 1
+						break
+					}
+					elem1 = elem1.Next()
+					elem2 = elem2.Next()
 				}
-				log.Infof(" > %s", elem.Value.(core.PairOfNode).PubKey)
-				elem = elem.Next()
 			}
+			dsComm = newDsList
+
+			// log.Infof("After DS block, new committee is")
+			// var elem *list.Element
+			// elem = dsComm.Front()
+			// for {
+			// 	if elem == nil {
+			// 		break
+			// 	}
+			// 	log.Infof(" > %s", elem.Value.(core.PairOfNode).PubKey)
+			// 	elem = elem.Next()
+			// }
 		}
 		curTxBlockNum = nextTxBlockNum
 	}
@@ -3324,6 +3360,7 @@ func (v *Verifier) generateDsCommArray(dsComm *list.List, dsBlock *core.DsBlock)
 		return nil, errors.New(fmt.Sprintf("ds list mismatch - expected %d from cosigs, got %d from current estimate", len(dsBlock.Cosigs.B2), dsComm.Len()))
 	}
 	bitmap := dsBlock.Cosigs.B2
+	log.Infof("DSC size %d", len(bitmap))
 	quorum := len(bitmap) / 3 * 2
 	trueCount := 0
 	for _, signed := range bitmap {
